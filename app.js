@@ -54,51 +54,168 @@ class SpotifyPlaylistDiscovery {
     async getRecommendations() {
         this.showLoading(true);
         try {
-            const topArtists = await this.fetchTopArtists();
-            const playlists = await this.searchPlaylists(topArtists);
+            console.log('Starting recommendation flow with token:', this.token ? 'Token exists' : 'No token');
+            
+            // Get user's top artists and tracks
+            const [topArtists, topTracks] = await Promise.all([
+                this.fetchTopArtists(),
+                this.fetchTopTracks()
+            ]);
+            console.log('Fetched top artists and tracks:', { topArtists, topTracks });
+
+            // Get seed genres from top artists
+            const genres = await this.getArtistGenres(topArtists);
+            console.log('Extracted genres:', genres);
+            
+            // Get recommended tracks based on user's taste
+            const recommendedTracks = await this.getRecommendedTracks(
+                topArtists.slice(0, 2),
+                topTracks.slice(0, 2),
+                genres.slice(0, 1)
+            );
+            console.log('Got recommended tracks:', recommendedTracks);
+
+            // Search for playlists containing these recommended tracks
+            const playlists = await this.findPlaylistsWithTracks(recommendedTracks);
+            console.log('Found matching playlists:', playlists);
+            
             this.displayPlaylists(playlists);
         } catch (error) {
-            console.error('Error:', error);
-            alert('Error getting recommendations. Please try again.');
+            console.error('Detailed error:', error);
+            if (!this.token) {
+                alert('Authentication token is missing. Please try logging in again.');
+            } else if (error.status === 401) {
+                alert('Authentication expired. Please log in again.');
+                sessionStorage.removeItem('spotify_token');
+                window.location.reload();
+            } else {
+                alert(`Error: ${error.message || 'Unknown error occurred'}. Please try again.`);
+            }
         }
         this.showLoading(false);
     }
 
     async fetchTopArtists() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=5', {
+        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term', {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
+        
+        if (!response.ok) {
+            const error = new Error(`HTTP error! status: ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+        
         const data = await response.json();
-        return data.items;
+        return data.items || [];
     }
 
-    async searchPlaylists(artists) {
-        const playlists = [];
-        for (const artist of artists) {
-            const response = await fetch(
-                `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.name)}&type=playlist&limit=3`, {
-                    headers: { 'Authorization': `Bearer ${this.token}` }
-                }
-            );
-            const data = await response.json();
-            playlists.push(...data.playlists.items.filter(playlist => 
-                playlist.owner.id !== 'spotify' && 
-                !playlist.owner.id.startsWith('spotify')
-            ));
+    async fetchTopTracks() {
+        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=10&time_range=medium_term', {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        
+        if (!response.ok) {
+            const error = new Error(`HTTP error! status: ${response.status}`);
+            error.status = response.status;
+            throw error;
         }
-        return playlists;
+        
+        const data = await response.json();
+        return data.items || [];
+    }
+
+    async getArtistGenres(artists) {
+        const allGenres = artists.flatMap(artist => artist.genres || []);
+        return [...new Set(allGenres)]; // Remove duplicates
+    }
+
+    async getRecommendedTracks(seedArtists, seedTracks, seedGenres) {
+        const params = new URLSearchParams({
+            seed_artists: seedArtists.map(artist => artist.id).join(','),
+            seed_tracks: seedTracks.map(track => track.id).join(','),
+            seed_genres: seedGenres.join(','),
+            limit: 20
+        });
+
+        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        
+        if (!response.ok) {
+            const error = new Error(`HTTP error! status: ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+        
+        const data = await response.json();
+        return data.tracks || [];
+    }
+
+    async findPlaylistsWithTracks(recommendedTracks) {
+        const playlists = new Set();
+        const processedPlaylistIds = new Set();
+
+        for (const track of recommendedTracks) {
+            try {
+                const response = await fetch(
+                    `https://api.spotify.com/v1/search?q=${encodeURIComponent(track.name)}${
+                        encodeURIComponent(' ' + track.artists[0].name)
+                    }&type=playlist&limit=5`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    }
+                );
+                
+                if (!response.ok) {
+                    console.error(`Failed to search playlists for track ${track.name}:`, response.status);
+                    continue;
+                }
+
+                const data = await response.json();
+                const validPlaylists = (data.playlists?.items || []).filter(playlist => 
+                    playlist &&
+                    playlist.owner &&
+                    playlist.owner.id !== 'spotify' &&
+                    !playlist.owner.id.startsWith('spotify') &&
+                    !processedPlaylistIds.has(playlist.id) &&
+                    playlist.tracks.total >= 20 // Only include substantial playlists
+                );
+
+                for (const playlist of validPlaylists) {
+                    processedPlaylistIds.add(playlist.id);
+                    playlists.add(playlist);
+                }
+            } catch (error) {
+                console.error(`Error processing track ${track.name}:`, error);
+                continue;
+            }
+        }
+
+        return Array.from(playlists);
     }
 
     displayPlaylists(playlists) {
         const container = document.getElementById('playlists-container');
+        
+        if (playlists.length === 0) {
+            container.innerHTML = `
+                <div class="no-results">
+                    <p>No matching playlists found. Try again later!</p>
+                </div>
+            `;
+            return;
+        }
+
         container.innerHTML = playlists.map(playlist => `
             <div class="playlist-card">
-                <img src="${playlist.images[0]?.url || 'default-playlist.png'}" alt="${playlist.name}">
+                <img src="${playlist.images[0]?.url || 'default-playlist.png'}" alt="${playlist.name || 'Untitled Playlist'}">
                 <div class="playlist-info">
-                    <h3>${playlist.name}</h3>
-                    <p>Created by: ${playlist.owner.display_name}</p>
-                    <p>${playlist.tracks.total} tracks</p>
-                    <a href="${playlist.external_urls.spotify}" target="_blank" class="spotify-button">Open in Spotify</a>
+                    <h3>${playlist.name || 'Untitled Playlist'}</h3>
+                    <p>Created by: ${playlist.owner?.display_name || 'Unknown Creator'}</p>
+                    <p>${playlist.tracks?.total || 0} tracks</p>
+                    <a href="${playlist.external_urls?.spotify || '#'}" target="_blank" class="spotify-button">
+                        Open in Spotify
+                    </a>
                 </div>
             </div>
         `).join('');
