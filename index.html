@@ -1,0 +1,38 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotify Playlist Discovery</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Login View -->
+        <div id="login-view">
+            <h1>Discover New Playlists</h1>
+            <p>Find playlists that match your music taste</p>
+            <button id="login-button" class="spotify-button">Connect with Spotify</button>
+        </div>
+
+        <!-- Main App View (hidden initially) -->
+        <div id="app-view" class="hidden">
+            <h1>Your Playlist Discovery</h1>
+            <button id="get-playlists" class="spotify-button">Recommend Playlists</button>
+            
+            <!-- Loading Spinner -->
+            <div id="loading" class="hidden">
+                <div class="spinner"></div>
+                <p>Finding perfect playlists for you...</p>
+            </div>
+
+            <!-- Results Container -->
+            <div id="playlists-container"></div>
+        </div>
+    </div>
+
+    <script src="spotify-config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
