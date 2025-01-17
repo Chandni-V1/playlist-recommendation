@@ -54,181 +54,51 @@ class SpotifyPlaylistDiscovery {
     async getRecommendations() {
         this.showLoading(true);
         try {
-            console.log('Starting recommendation flow with token:', this.token ? 'Token exists' : 'No token');
-            
-            // Get user's top artists and tracks
-            const [topArtists, topTracks] = await Promise.all([
-                this.fetchTopArtists(),
-                this.fetchTopTracks()
-            ]);
-            console.log('Fetched top artists and tracks:', { topArtists, topTracks });
-
-            // Get recommended tracks using just artists and tracks as seeds
-          async getRecommendedTracks(seedArtists, seedTracks) {
-        if (!seedArtists.length && !seedTracks.length) {
-            throw new Error('No seed artists or tracks available');
+            const topArtists = await this.fetchTopArtists();
+            const playlists = await this.searchPlaylists(topArtists);
+            this.displayPlaylists(playlists);
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error getting recommendations. Please try again.');
         }
-
-        // Create base URL
-        let url = 'https://api.spotify.com/v1/recommendations?limit=20';
-
-        // Add seed artists if available
-        if (seedArtists.length > 0) {
-            // Use plain comma without encoding
-            url += `&seed_artists=${seedArtists.map(artist => artist.id).join(',')}`;
-        }
-
-        // Add seed tracks if available
-        if (seedTracks.length > 0) {
-            // Use plain comma without encoding
-            url += `&seed_tracks=${seedTracks.map(track => track.id).join(',')}`;
-        }
-
-        console.log('Recommendations URL:', url); // For debugging
-
-        const response = await fetch(url, {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-        });
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Recommendations API error:', errorText);
-            const error = new Error(`HTTP error! status: ${response.status}`);
-            error.status = response.status;
-            throw error;
-        }
-        
-        const data = await response.json();
-        return data.tracks || [];
+        this.showLoading(false);
     }
-
 
     async fetchTopArtists() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term', {
+        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=5', {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
-        
-        if (!response.ok) {
-            const error = new Error(`HTTP error! status: ${response.status}`);
-            error.status = response.status;
-            throw error;
-        }
-        
         const data = await response.json();
-        return data.items || [];
+        return data.items;
     }
 
-    async fetchTopTracks() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=10&time_range=medium_term', {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-        });
-        
-        if (!response.ok) {
-            const error = new Error(`HTTP error! status: ${response.status}`);
-            error.status = response.status;
-            throw error;
-        }
-        
-        const data = await response.json();
-        return data.items || [];
-    }
-
-    async getRecommendedTracks(seedArtists, seedTracks) {
-        if (!seedArtists.length && !seedTracks.length) {
-            throw new Error('No seed artists or tracks available');
-        }
-
-        const params = new URLSearchParams();
-        
-        if (seedArtists.length) {
-            params.append('seed_artists', seedArtists.map(artist => artist.id).join(','));
-        }
-        
-        if (seedTracks.length) {
-            params.append('seed_tracks', seedTracks.map(track => track.id).join(','));
-        }
-        
-        params.append('limit', '20');
-
-        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-        });
-        
-        if (!response.ok) {
-            console.error('Recommendations API error:', await response.text());
-            const error = new Error(`HTTP error! status: ${response.status}`);
-            error.status = response.status;
-            throw error;
-        }
-        
-        const data = await response.json();
-        return data.tracks || [];
-    }
-
-    async findPlaylistsWithTracks(recommendedTracks) {
-        const playlists = new Set();
-        const processedPlaylistIds = new Set();
-
-        for (const track of recommendedTracks) {
-            try {
-                const response = await fetch(
-                    `https://api.spotify.com/v1/search?q=${encodeURIComponent(track.name)}${
-                        encodeURIComponent(' ' + track.artists[0].name)
-                    }&type=playlist&limit=5`, {
-                        headers: { 'Authorization': `Bearer ${this.token}` }
-                    }
-                );
-                
-                if (!response.ok) {
-                    console.error(`Failed to search playlists for track ${track.name}:`, response.status);
-                    continue;
+    async searchPlaylists(artists) {
+        const playlists = [];
+        for (const artist of artists) {
+            const response = await fetch(
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.name)}&type=playlist&limit=3`, {
+                    headers: { 'Authorization': `Bearer ${this.token}` }
                 }
-
-                const data = await response.json();
-                const validPlaylists = (data.playlists?.items || []).filter(playlist => 
-                    playlist &&
-                    playlist.owner &&
-                    playlist.owner.id !== 'spotify' &&
-                    !playlist.owner.id.startsWith('spotify') &&
-                    !processedPlaylistIds.has(playlist.id) &&
-                    playlist.tracks.total >= 20 // Only include substantial playlists
-                );
-
-                for (const playlist of validPlaylists) {
-                    processedPlaylistIds.add(playlist.id);
-                    playlists.add(playlist);
-                }
-            } catch (error) {
-                console.error(`Error processing track ${track.name}:`, error);
-                continue;
-            }
+            );
+            const data = await response.json();
+            playlists.push(...data.playlists.items.filter(playlist => 
+                playlist.owner.id !== 'spotify' && 
+                !playlist.owner.id.startsWith('spotify')
+            ));
         }
-
-        return Array.from(playlists);
+        return playlists;
     }
 
     displayPlaylists(playlists) {
         const container = document.getElementById('playlists-container');
-        
-        if (playlists.length === 0) {
-            container.innerHTML = `
-                <div class="no-results">
-                    <p>No matching playlists found. Try again later!</p>
-                </div>
-            `;
-            return;
-        }
-
         container.innerHTML = playlists.map(playlist => `
             <div class="playlist-card">
-                <img src="${playlist.images[0]?.url || 'default-playlist.png'}" alt="${playlist.name || 'Untitled Playlist'}">
+                <img src="${playlist.images[0]?.url || 'default-playlist.png'}" alt="${playlist.name}">
                 <div class="playlist-info">
-                    <h3>${playlist.name || 'Untitled Playlist'}</h3>
-                    <p>Created by: ${playlist.owner?.display_name || 'Unknown Creator'}</p>
-                    <p>${playlist.tracks?.total || 0} tracks</p>
-                    <a href="${playlist.external_urls?.spotify || '#'}" target="_blank" class="spotify-button">
-                        Open in Spotify
-                    </a>
+                    <h3>${playlist.name}</h3>
+                    <p>Created by: ${playlist.owner.display_name}</p>
+                    <p>${playlist.tracks.total} tracks</p>
+                    <a href="${playlist.external_urls.spotify}" target="_blank" class="spotify-button">Open in Spotify</a>
                 </div>
             </div>
         `).join('');
