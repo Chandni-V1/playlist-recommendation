@@ -63,15 +63,10 @@ class SpotifyPlaylistDiscovery {
             ]);
             console.log('Fetched top artists and tracks:', { topArtists, topTracks });
 
-            // Get seed genres from top artists
-            const genres = await this.getArtistGenres(topArtists);
-            console.log('Extracted genres:', genres);
-            
-            // Get recommended tracks based on user's taste
+            // Get recommended tracks using just artists and tracks as seeds
             const recommendedTracks = await this.getRecommendedTracks(
                 topArtists.slice(0, 2),
-                topTracks.slice(0, 2),
-                genres.slice(0, 1)
+                topTracks.slice(0, 2)
             );
             console.log('Got recommended tracks:', recommendedTracks);
 
@@ -125,24 +120,29 @@ class SpotifyPlaylistDiscovery {
         return data.items || [];
     }
 
-    async getArtistGenres(artists) {
-        const allGenres = artists.flatMap(artist => artist.genres || []);
-        return [...new Set(allGenres)]; // Remove duplicates
-    }
+    async getRecommendedTracks(seedArtists, seedTracks) {
+        if (!seedArtists.length && !seedTracks.length) {
+            throw new Error('No seed artists or tracks available');
+        }
 
-    async getRecommendedTracks(seedArtists, seedTracks, seedGenres) {
-        const params = new URLSearchParams({
-            seed_artists: seedArtists.map(artist => artist.id).join(','),
-            seed_tracks: seedTracks.map(track => track.id).join(','),
-            seed_genres: seedGenres.join(','),
-            limit: 20
-        });
+        const params = new URLSearchParams();
+        
+        if (seedArtists.length) {
+            params.append('seed_artists', seedArtists.map(artist => artist.id).join(','));
+        }
+        
+        if (seedTracks.length) {
+            params.append('seed_tracks', seedTracks.map(track => track.id).join(','));
+        }
+        
+        params.append('limit', '20');
 
         const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
         
         if (!response.ok) {
+            console.error('Recommendations API error:', await response.text());
             const error = new Error(`HTTP error! status: ${response.status}`);
             error.status = response.status;
             throw error;
