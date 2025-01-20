@@ -75,29 +75,23 @@ class SpotifyPlaylistDiscovery {
         this.showLoading(true);
 
         try {
-            // Get top artists and tracks
-            const [artists, tracks] = await Promise.all([
-                this.fetchTopArtists(),
-                this.fetchTopTracks()
-            ]);
-
-            if (!artists.length && !tracks.length) {
-                throw new Error('No top artists or tracks found');
-            }
-
-            // Get recommendations using both artist and track seeds
-            const recommendedTracks = await this.getRecommendedTracks(
-                artists[0]?.id, 
-                tracks[0]?.id
-            );
+            // Get available genres first
+            const availableGenres = await this.getAvailableGenres();
             
-            if (!recommendedTracks.length) {
+            // Use pop as a fallback if no genres are available
+            const seedGenre = availableGenres.length > 0 ? availableGenres[0] : 'pop';
+            
+            // Get recommendations using genre seed
+            const recommendedTracks = await this.getRecommendedTracks(seedGenre);
+            
+            if (!recommendedTracks || recommendedTracks.length === 0) {
                 throw new Error('No recommendations found');
             }
 
             // Find playlists
             const playlists = await this.findPlaylistsWithTracks(recommendedTracks);
             this.displayPlaylists(playlists);
+
         } catch (error) {
             console.error('Error:', error);
             if (error.status === 401) {
@@ -105,80 +99,39 @@ class SpotifyPlaylistDiscovery {
                 sessionStorage.removeItem('spotify_token');
                 window.location.reload();
             } else {
-                alert(error.message || 'An error occurred. Please try again.');
+                alert('An error occurred. Please try again.');
             }
         } finally {
             this.showLoading(false);
         }
     }
 
-    async fetchTopArtists() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=2&time_range=medium_term', {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-        });
+    async getAvailableGenres() {
+        try {
+            const response = await fetch('https://api.spotify.com/v1/recommendations/available-genre-seeds', {
+                headers: { 'Authorization': `Bearer ${this.token}` }
+            });
 
-        if (!response.ok) {
-            throw { status: response.status, message: 'Failed to fetch top artists' };
-        }
-
-        const data = await response.json();
-        return data.items || [];
-    }
-
-    async fetchTopTracks() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=3&time_range=medium_term', {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-        });
-
-        if (!response.ok) {
-            throw { status: response.status, message: 'Failed to fetch top tracks' };
-        }
-
-        const data = await response.json();
-        return data.items || [];
-    }
-
-    async getRecommendedTracks(artistId, trackId) {
-        // Ensure we have at least one seed
-        if (!artistId && !trackId) {
-            // If no user top items, use a popular genre as fallback
-            return this.getGenreBasedRecommendations();
-        }
-
-        const params = new URLSearchParams();
-        params.append('limit', '10');
-
-        if (artistId) params.append('seed_artists', artistId);
-        if (trackId) params.append('seed_tracks', trackId);
-        
-        // Add market parameter to ensure available tracks
-        params.append('market', 'US');
-
-        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params.toString()}`, {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-        });
-
-        if (!response.ok) {
-            if (response.status === 404) {
-                // If 404, try genre-based recommendations as fallback
-                return this.getGenreBasedRecommendations();
+            if (!response.ok) {
+                throw new Error('Failed to fetch genres');
             }
-            throw { status: response.status, message: 'Failed to get recommendations' };
-        }
 
-        const data = await response.json();
-        return data.tracks || [];
+            const data = await response.json();
+            return data.genres || [];
+        } catch (error) {
+            console.error('Error fetching genres:', error);
+            return [];
+        }
     }
 
-    async getGenreBasedRecommendations() {
-        // Fallback to using popular genres if we can't get user-based recommendations
+    async getRecommendedTracks(seedGenre) {
         const params = new URLSearchParams({
-            seed_genres: 'pop,rock',  // Using popular genres as fallback
-            limit: '10',
+            seed_genres: seedGenre,
+            limit: 20,
             market: 'US'
         });
 
-        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params.toString()}`, {
+        const response = await fetch('https://api.spotify.com/v1/recommendations?' + params.toString(), {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
 
