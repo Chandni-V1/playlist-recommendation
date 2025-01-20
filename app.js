@@ -54,25 +54,29 @@ class SpotifyPlaylistDiscovery {
     async getRecommendations() {
         this.showLoading(true);
         try {
-            console.log('Starting recommendation flow with token:', this.token ? 'Token exists' : 'No token');
-            
-            // Get user's top artists and tracks
-            const [topArtists, topTracks] = await Promise.all([
-                this.fetchTopArtists(),
-                this.fetchTopTracks()
-            ]);
-            console.log('Fetched top artists and tracks:', { topArtists, topTracks });
+            console.log('Starting recommendation flow...');
+            console.log('Token exists:', !!this.token);
 
-            // Get recommended tracks using just artists and tracks as seeds
+            // First get user's top items
+            const topArtists = await this.fetchTopArtists();
+            console.log('Top artists:', topArtists);
+
+            const topTracks = await this.fetchTopTracks();
+            console.log('Top tracks:', topTracks);
+
+            if (!topArtists.length || !topTracks.length) {
+                throw new Error('No top artists or tracks found');
+            }
+
+            // Get recommendations using just the first artist and track
             const recommendedTracks = await this.getRecommendedTracks(
-                topArtists.slice(0, 2),
-                topTracks.slice(0, 2)
+                [topArtists[0]],  // Just use first artist
+                [topTracks[0]]    // Just use first track
             );
-            console.log('Got recommended tracks:', recommendedTracks);
+            console.log('Recommended tracks:', recommendedTracks);
 
-            // Search for playlists containing these recommended tracks
             const playlists = await this.findPlaylistsWithTracks(recommendedTracks);
-            console.log('Found matching playlists:', playlists);
+            console.log('Found playlists:', playlists);
             
             this.displayPlaylists(playlists);
         } catch (error) {
@@ -91,14 +95,15 @@ class SpotifyPlaylistDiscovery {
     }
 
     async fetchTopArtists() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term', {
+        console.log('Fetching top artists...');
+        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=10', {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
         
         if (!response.ok) {
-            const error = new Error(`HTTP error! status: ${response.status}`);
-            error.status = response.status;
-            throw error;
+            const errorText = await response.text();
+            console.error('Top artists error:', errorText);
+            throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         const data = await response.json();
@@ -106,14 +111,15 @@ class SpotifyPlaylistDiscovery {
     }
 
     async fetchTopTracks() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=10&time_range=medium_term', {
+        console.log('Fetching top tracks...');
+        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=10', {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
         
         if (!response.ok) {
-            const error = new Error(`HTTP error! status: ${response.status}`);
-            error.status = response.status;
-            throw error;
+            const errorText = await response.text();
+            console.error('Top tracks error:', errorText);
+            throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         const data = await response.json();
@@ -121,31 +127,39 @@ class SpotifyPlaylistDiscovery {
     }
 
     async getRecommendedTracks(seedArtists, seedTracks) {
-        if (!seedArtists.length && !seedTracks.length) {
-            throw new Error('No seed artists or tracks available');
+        console.log('Getting recommendations with seeds:', {
+            artists: seedArtists.map(a => a.id),
+            tracks: seedTracks.map(t => t.id)
+        });
+
+        let baseUrl = 'https://api.spotify.com/v1/recommendations';
+        const params = {
+            limit: 20
+        };
+
+        if (seedArtists.length > 0) {
+            params.seed_artists = seedArtists[0].id;
+        }
+        if (seedTracks.length > 0) {
+            params.seed_tracks = seedTracks[0].id;
         }
 
-        const params = new URLSearchParams();
-        
-        if (seedArtists.length) {
-            params.append('seed_artists', seedArtists.map(artist => artist.id).join(','));
-        }
-        
-        if (seedTracks.length) {
-            params.append('seed_tracks', seedTracks.map(track => track.id).join(','));
-        }
-        
-        params.append('limit', '20');
+        // Build query string
+        const queryString = Object.entries(params)
+            .map(([key, value]) => `${key}=${value}`)
+            .join('&');
 
-        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
+        const url = `${baseUrl}?${queryString}`;
+        console.log('Recommendations URL:', url);
+
+        const response = await fetch(url, {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
         
         if (!response.ok) {
-            console.error('Recommendations API error:', await response.text());
-            const error = new Error(`HTTP error! status: ${response.status}`);
-            error.status = response.status;
-            throw error;
+            const errorText = await response.text();
+            console.error('Recommendations API error:', errorText);
+            throw new Error(`HTTP error! status: ${response.status}`);
         }
         
         const data = await response.json();
@@ -178,7 +192,7 @@ class SpotifyPlaylistDiscovery {
                     playlist.owner.id !== 'spotify' &&
                     !playlist.owner.id.startsWith('spotify') &&
                     !processedPlaylistIds.has(playlist.id) &&
-                    playlist.tracks.total >= 20 // Only include substantial playlists
+                    playlist.tracks.total >= 20
                 );
 
                 for (const playlist of validPlaylists) {
