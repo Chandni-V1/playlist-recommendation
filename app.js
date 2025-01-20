@@ -1,16 +1,12 @@
 class SpotifyPlaylistDiscovery {
     constructor() {
-        // Initialize variables
         this.token = null;
-        
-        // Bind event listeners after DOM is loaded
         document.addEventListener('DOMContentLoaded', () => {
             this.initializeApp();
         });
     }
 
     initializeApp() {
-        // Set up button listeners
         const loginButton = document.getElementById('login-button');
         const playlistButton = document.getElementById('get-playlists');
         
@@ -22,12 +18,10 @@ class SpotifyPlaylistDiscovery {
             playlistButton.onclick = () => this.getRecommendations();
         }
 
-        // Check for returning auth
         if (window.location.hash) {
             this.handleAuthCallback();
         }
 
-        // Check for existing token
         const existingToken = sessionStorage.getItem('spotify_token');
         if (existingToken) {
             this.token = existingToken;
@@ -58,7 +52,6 @@ class SpotifyPlaylistDiscovery {
             this.token = accessToken;
             sessionStorage.setItem('spotify_token', accessToken);
             this.showAppView();
-            // Clear hash
             history.pushState("", document.title, window.location.pathname);
         }
     }
@@ -88,13 +81,22 @@ class SpotifyPlaylistDiscovery {
                 this.fetchTopTracks()
             ]);
 
-            // Get recommendations
-            const recommendedTracks = await this.getRecommendedTracks(artists[0].id);
+            if (!artists.length && !tracks.length) {
+                throw new Error('No top artists or tracks found');
+            }
+
+            // Get recommendations using both artist and track seeds
+            const recommendedTracks = await this.getRecommendedTracks(
+                artists[0]?.id, 
+                tracks[0]?.id
+            );
             
+            if (!recommendedTracks.length) {
+                throw new Error('No recommendations found');
+            }
+
             // Find playlists
             const playlists = await this.findPlaylistsWithTracks(recommendedTracks);
-            
-            // Display results
             this.displayPlaylists(playlists);
         } catch (error) {
             console.error('Error:', error);
@@ -103,7 +105,7 @@ class SpotifyPlaylistDiscovery {
                 sessionStorage.removeItem('spotify_token');
                 window.location.reload();
             } else {
-                alert('An error occurred. Please try again.');
+                alert(error.message || 'An error occurred. Please try again.');
             }
         } finally {
             this.showLoading(false);
@@ -111,7 +113,7 @@ class SpotifyPlaylistDiscovery {
     }
 
     async fetchTopArtists() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=1', {
+        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=2&time_range=medium_term', {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
 
@@ -120,11 +122,11 @@ class SpotifyPlaylistDiscovery {
         }
 
         const data = await response.json();
-        return data.items;
+        return data.items || [];
     }
 
     async fetchTopTracks() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=1', {
+        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=3&time_range=medium_term', {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
 
@@ -133,16 +135,50 @@ class SpotifyPlaylistDiscovery {
         }
 
         const data = await response.json();
-        return data.items;
+        return data.items || [];
     }
 
-    async getRecommendedTracks(artistId) {
-        const params = new URLSearchParams({
-            seed_artists: artistId,
-            limit: 10
+    async getRecommendedTracks(artistId, trackId) {
+        // Ensure we have at least one seed
+        if (!artistId && !trackId) {
+            // If no user top items, use a popular genre as fallback
+            return this.getGenreBasedRecommendations();
+        }
+
+        const params = new URLSearchParams();
+        params.append('limit', '10');
+
+        if (artistId) params.append('seed_artists', artistId);
+        if (trackId) params.append('seed_tracks', trackId);
+        
+        // Add market parameter to ensure available tracks
+        params.append('market', 'US');
+
+        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params.toString()}`, {
+            headers: { 'Authorization': `Bearer ${this.token}` }
         });
 
-        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
+        if (!response.ok) {
+            if (response.status === 404) {
+                // If 404, try genre-based recommendations as fallback
+                return this.getGenreBasedRecommendations();
+            }
+            throw { status: response.status, message: 'Failed to get recommendations' };
+        }
+
+        const data = await response.json();
+        return data.tracks || [];
+    }
+
+    async getGenreBasedRecommendations() {
+        // Fallback to using popular genres if we can't get user-based recommendations
+        const params = new URLSearchParams({
+            seed_genres: 'pop,rock',  // Using popular genres as fallback
+            limit: '10',
+            market: 'US'
+        });
+
+        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params.toString()}`, {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
 
@@ -151,7 +187,7 @@ class SpotifyPlaylistDiscovery {
         }
 
         const data = await response.json();
-        return data.tracks;
+        return data.tracks || [];
     }
 
     async findPlaylistsWithTracks(tracks) {
