@@ -4,27 +4,83 @@ class SpotifyPlaylistDiscovery {
         this.initializeApp();
     }
 
+    initializeApp() {
+        // Check if we're returning from Spotify auth
+        if (window.location.hash) {
+            this.handleAuthCallback();
+        }
+
+        // Setup button listeners
+        document.getElementById('login-button').addEventListener('click', () => this.login());
+        document.getElementById('get-playlists').addEventListener('click', () => this.getRecommendations());
+
+        // Check if we have a token
+        if (sessionStorage.getItem('spotify_token')) {
+            this.token = sessionStorage.getItem('spotify_token');
+            this.showAppView();
+        }
+    }
+
+    login() {
+        const authUrl = 
+            'https://accounts.spotify.com/authorize' +
+            '?client_id=' + SPOTIFY_CONFIG.CLIENT_ID +
+            '&response_type=token' +
+            '&redirect_uri=' + encodeURIComponent(SPOTIFY_CONFIG.REDIRECT_URI) +
+            '&scope=' + SPOTIFY_CONFIG.SCOPES.join('%20') +
+            '&show_dialog=true';
+        
+        window.location.href = authUrl;
+    }
+
+    handleAuthCallback() {
+        const hash = window.location.hash.substring(1);
+        const params = new URLSearchParams(hash);
+        this.token = params.get('access_token');
+        
+        if (this.token) {
+            sessionStorage.setItem('spotify_token', this.token);
+            this.showAppView();
+            // Clear the URL hash
+            history.pushState("", document.title, window.location.pathname);
+        }
+    }
+
+    showAppView() {
+        document.getElementById('login-view').classList.add('hidden');
+        document.getElementById('app-view').classList.remove('hidden');
+    }
+
     async getRecommendations() {
         this.showLoading(true);
         try {
             console.log('Starting recommendation flow with token:', this.token ? 'Token exists' : 'No token');
             
-            const topArtists = await this.fetchTopArtists();
-            console.log('Fetched top artists:', topArtists);
-            
-            const playlists = await this.searchPlaylists(topArtists);
-            console.log('Fetched playlists:', playlists);
+            // Get user's top artists and tracks
+            const [topArtists, topTracks] = await Promise.all([
+                this.fetchTopArtists(),
+                this.fetchTopTracks()
+            ]);
+            console.log('Fetched top artists and tracks:', { topArtists, topTracks });
+
+            // Get recommended tracks using just artists and tracks as seeds
+            const recommendedTracks = await this.getRecommendedTracks(
+                topArtists.slice(0, 2),
+                topTracks.slice(0, 2)
+            );
+            console.log('Got recommended tracks:', recommendedTracks);
+
+            // Search for playlists containing these recommended tracks
+            const playlists = await this.findPlaylistsWithTracks(recommendedTracks);
+            console.log('Found matching playlists:', playlists);
             
             this.displayPlaylists(playlists);
         } catch (error) {
             console.error('Detailed error:', error);
-            
-            // More specific error messages
             if (!this.token) {
                 alert('Authentication token is missing. Please try logging in again.');
             } else if (error.status === 401) {
                 alert('Authentication expired. Please log in again.');
-                // Clear the invalid token
                 sessionStorage.removeItem('spotify_token');
                 window.location.reload();
             } else {
@@ -35,7 +91,7 @@ class SpotifyPlaylistDiscovery {
     }
 
     async fetchTopArtists() {
-        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=5', {
+        const response = await fetch('https://api.spotify.com/v1/me/top/artists?limit=10&time_range=medium_term', {
             headers: { 'Authorization': `Bearer ${this.token}` }
         });
         
@@ -46,43 +102,130 @@ class SpotifyPlaylistDiscovery {
         }
         
         const data = await response.json();
-        if (!data.items || !Array.isArray(data.items)) {
-            throw new Error('Invalid response format from top artists endpoint');
-        }
-        return data.items;
+        return data.items || [];
     }
 
-    async searchPlaylists(artists) {
-        if (!Array.isArray(artists) || artists.length === 0) {
-            throw new Error('No artists available to search playlists');
+    async fetchTopTracks() {
+        const response = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=10&time_range=medium_term', {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        
+        if (!response.ok) {
+            const error = new Error(`HTTP error! status: ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+        
+        const data = await response.json();
+        return data.items || [];
+    }
+
+    async getRecommendedTracks(seedArtists, seedTracks) {
+        if (!seedArtists.length && !seedTracks.length) {
+            throw new Error('No seed artists or tracks available');
         }
 
-        const playlists = [];
-        for (const artist of artists) {
-            const response = await fetch(
-                `https://api.spotify.com/v1/search?q=${encodeURIComponent(artist.name)}&type=playlist&limit=3`, {
-                    headers: { 'Authorization': `Bearer ${this.token}` }
+        const params = new URLSearchParams();
+        
+        if (seedArtists.length) {
+            params.append('seed_artists', seedArtists.map(artist => artist.id).join(','));
+        }
+        
+        if (seedTracks.length) {
+            params.append('seed_tracks', seedTracks.map(track => track.id).join(','));
+        }
+        
+        params.append('limit', '20');
+
+        const response = await fetch(`https://api.spotify.com/v1/recommendations?${params}`, {
+            headers: { 'Authorization': `Bearer ${this.token}` }
+        });
+        
+        if (!response.ok) {
+            console.error('Recommendations API error:', await response.text());
+            const error = new Error(`HTTP error! status: ${response.status}`);
+            error.status = response.status;
+            throw error;
+        }
+        
+        const data = await response.json();
+        return data.tracks || [];
+    }
+
+    async findPlaylistsWithTracks(recommendedTracks) {
+        const playlists = new Set();
+        const processedPlaylistIds = new Set();
+
+        for (const track of recommendedTracks) {
+            try {
+                const response = await fetch(
+                    `https://api.spotify.com/v1/search?q=${encodeURIComponent(track.name)}${
+                        encodeURIComponent(' ' + track.artists[0].name)
+                    }&type=playlist&limit=5`, {
+                        headers: { 'Authorization': `Bearer ${this.token}` }
+                    }
+                );
+                
+                if (!response.ok) {
+                    console.error(`Failed to search playlists for track ${track.name}:`, response.status);
+                    continue;
                 }
-            );
-            
-            if (!response.ok) {
-                const error = new Error(`HTTP error! status: ${response.status}`);
-                error.status = response.status;
-                throw error;
-            }
 
-            const data = await response.json();
-            if (!data.playlists || !data.playlists.items) {
-                throw new Error('Invalid response format from playlist search endpoint');
-            }
+                const data = await response.json();
+                const validPlaylists = (data.playlists?.items || []).filter(playlist => 
+                    playlist &&
+                    playlist.owner &&
+                    playlist.owner.id !== 'spotify' &&
+                    !playlist.owner.id.startsWith('spotify') &&
+                    !processedPlaylistIds.has(playlist.id) &&
+                    playlist.tracks.total >= 20 // Only include substantial playlists
+                );
 
-            playlists.push(...data.playlists.items.filter(playlist => 
-                playlist.owner.id !== 'spotify' && 
-                !playlist.owner.id.startsWith('spotify')
-            ));
+                for (const playlist of validPlaylists) {
+                    processedPlaylistIds.add(playlist.id);
+                    playlists.add(playlist);
+                }
+            } catch (error) {
+                console.error(`Error processing track ${track.name}:`, error);
+                continue;
+            }
         }
-        return playlists;
+
+        return Array.from(playlists);
     }
 
-    // ... rest of the class remains the same
+    displayPlaylists(playlists) {
+        const container = document.getElementById('playlists-container');
+        
+        if (playlists.length === 0) {
+            container.innerHTML = `
+                <div class="no-results">
+                    <p>No matching playlists found. Try again later!</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = playlists.map(playlist => `
+            <div class="playlist-card">
+                <img src="${playlist.images[0]?.url || 'default-playlist.png'}" alt="${playlist.name || 'Untitled Playlist'}">
+                <div class="playlist-info">
+                    <h3>${playlist.name || 'Untitled Playlist'}</h3>
+                    <p>Created by: ${playlist.owner?.display_name || 'Unknown Creator'}</p>
+                    <p>${playlist.tracks?.total || 0} tracks</p>
+                    <a href="${playlist.external_urls?.spotify || '#'}" target="_blank" class="spotify-button">
+                        Open in Spotify
+                    </a>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    showLoading(show) {
+        document.getElementById('loading').classList.toggle('hidden', !show);
+        document.getElementById('playlists-container').innerHTML = '';
+    }
 }
+
+// Initialize the app
+new SpotifyPlaylistDiscovery();
